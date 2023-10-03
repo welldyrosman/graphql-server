@@ -3,8 +3,9 @@ const { graphqlHTTP } = require("express-graphql");
 const { buildSchema } = require("graphql");
 const cors = require('cors');
 const sqlite3 = require("sqlite3").verbose();
- 
-const db = new sqlite3.Database("./database.db");
+const databaseDirectory = __dirname + '/database.db';
+console.log("path",databaseDirectory);
+const db = new sqlite3.Database(databaseDirectory);
 
 // Inisialisasi basis data SQLite
 db.serialize(() => {
