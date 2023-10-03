@@ -4,7 +4,7 @@ const { buildSchema } = require("graphql");
 const cors = require('cors');
 const sqlite3 = require("sqlite3").verbose();
  
-const db = new sqlite3.Database("database.db");
+const db = new sqlite3.Database("./database.db");
 
 // Inisialisasi basis data SQLite
 db.serialize(() => {
