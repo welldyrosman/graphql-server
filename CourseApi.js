@@ -9,7 +9,15 @@ const { check, validationResult } = require("express-validator");
 
 dotenv.config();
 const databaseDirectory = __dirname + "/database.db";
-const db = new sqlite3.Database(databaseDirectory);
+const db = new sqlite3.Database(
+  databaseDirectory,
+  sqlite3.OPEN_READWRITE,
+  (err) => {
+    if (err) {
+      console.log("Error when creating the database", err);
+    }
+  }
+);
 
 const storage = multer.memoryStorage();
 

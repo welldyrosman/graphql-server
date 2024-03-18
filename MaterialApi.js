@@ -4,7 +4,15 @@ const sqlite3 = require("sqlite3").verbose();
 const { check, validationResult } = require("express-validator");
 
 const databaseDirectory = __dirname + "/database.db";
-const db = new sqlite3.Database(databaseDirectory);
+const db = new sqlite3.Database(
+  databaseDirectory,
+  sqlite3.OPEN_READWRITE,
+  (err) => {
+    if (err) {
+      console.log("Error when creating the database", err);
+    }
+  }
+);
 
 router.use(express.json());
 
