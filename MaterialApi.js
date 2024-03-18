@@ -50,7 +50,7 @@ router.put(
       function (err) {
         if (err) {
           console.error("Error updating material:", err);
-          res.status(500).json({ error: "Internal Server Error" });
+          res.status(500).json({ error: err });
         } else {
           res.json({
             id: materialId,
