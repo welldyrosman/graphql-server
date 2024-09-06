@@ -1,18 +1,12 @@
 const express = require("express");
 const router = express.Router();
-const sqlite3 = require("sqlite3").verbose();
+const { Pool } = require("pg");
 const { check, validationResult, body } = require("express-validator");
 
-const databaseDirectory = __dirname + "/database.db";
-const db = new sqlite3.Database(
-  databaseDirectory,
-  sqlite3.OPEN_READWRITE,
-  (err) => {
-    if (err) {
-      console.log("Error when creating the database", err);
-    }
-  }
-);
+// Database connection configuration
+const pool = new Pool({
+  connectionString: "postgres://default:DIJfbQl0Tp4A@ep-super-bush-a1526tnv.ap-southeast-1.aws.neon.tech:5432/verceldb?sslmode=require",
+});
 
 router.use(express.json());
 router.use(express.urlencoded({ extended: true }));
@@ -32,7 +26,8 @@ const validateChapterData = [
     .notEmpty()
     .withMessage("Topic title is required."),
 ];
-// Menggunakan method POST untuk menambahkan atau memperbarui chapter dan topics
+
+// POST method to add or update chapters and topics
 router.post("/:id", validateChapterData, async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
@@ -41,18 +36,20 @@ router.post("/:id", validateChapterData, async (req, res) => {
 
   const { chapters } = req.body;
 
+  const client = await pool.connect();
   try {
+    await client.query("BEGIN");
+
     for (const chapter of chapters) {
       const { id, title, topics, del, courseId = req.params.id } = chapter;
 
       if (id && del) {
         // Delete chapter and its topics
-        await db.run("DELETE FROM materials WHERE ChapterID = ?", [id]);
-        await db.run("DELETE FROM chapters WHERE ChapterID = ?", [id]);
+        await client.query('DELETE FROM public."Materials" WHERE "ChapterID" = $1', [id]);
+        await client.query('DELETE FROM public."Chapters" WHERE "ChapterID" = $1', [id]);
       } else {
         // Add or update chapter
-        console.log(chapter.ChapterName);
-        const chapterId = id ? id : await dbInsertChapter(courseId, title);
+        const chapterId = id ? id : await dbInsertChapter(client, courseId, title);
 
         if (topics && topics.length > 0) {
           for (const topic of topics) {
@@ -66,12 +63,13 @@ router.post("/:id", validateChapterData, async (req, res) => {
 
             if (topicId && topicDel) {
               // Delete topic
-              await db.run("DELETE FROM materials WHERE MaterialID = ?", [
+              await client.query('DELETE FROM public."Materials" WHERE "MaterialID" = $1', [
                 topicId,
               ]);
             } else {
               // Add or update topic
               await dbInsertOrUpdateMaterial(
+                client,
                 chapterId,
                 topicId,
                 topicTitle,
@@ -84,130 +82,99 @@ router.post("/:id", validateChapterData, async (req, res) => {
       }
     }
 
+    await client.query("COMMIT");
     res.json({ message: "Chapter and topics updated successfully." });
   } catch (err) {
+    await client.query("ROLLBACK");
     console.error("Error:", err);
     res.status(500).json({ error: "Internal Server Error" });
+  } finally {
+    client.release();
   }
 });
 
-async function dbInsertChapter(courseId, chapterTitle) {
-  return new Promise((resolve, reject) => {
-    db.run(
-      "INSERT INTO chapters (CourseID, ChapterName) VALUES (?, ?)",
-      [courseId, chapterTitle],
-      function (err) {
-        if (err) {
-          reject(err);
-        }
-        resolve(this.lastID);
-      }
-    );
-  });
+async function dbInsertChapter(client, courseId, chapterTitle) {
+  const result = await client.query(
+    `INSERT INTO public."Chapters" ("CourseID", "ChapterName") VALUES ($1, $2) RETURNING "ChapterID"`,
+    [courseId, chapterTitle]
+  );
+  return result.rows[0].chapterid;
 }
 
 async function dbInsertOrUpdateMaterial(
+  client,
   chapterId,
   topicId,
   topicTitle,
   content,
   publishDate
 ) {
-  return new Promise((resolve, reject) => {
-    db.run(
-      topicId
-        ? "UPDATE materials SET MaterialTitle = ?, MaterialContent = ?, PublishDate = ? WHERE MaterialID = ?"
-        : "INSERT INTO materials (ChapterID, MaterialTitle, MaterialContent, PublishDate) VALUES (?, ?, ?, ?)",
-      topicId
-        ? [topicTitle, content, publishDate, topicId]
-        : [chapterId, topicTitle, content, publishDate],
-      function (err) {
-        if (err) {
-          reject(err);
-        }
-        resolve(this.lastID);
-      }
+  if (topicId) {
+    await client.query(
+      `UPDATE public."Materials" SET "MaterialTitle" = $1, "MaterialContent" = $2, "PublishDate" = $3 WHERE "MaterialID" = $4`,
+      [topicTitle, content, publishDate, topicId]
     );
-  });
+  } else {
+    const result = await client.query(
+      `INSERT INTO public."Materials" ("ChapterID", "MaterialTitle", "MaterialContent", "PublishDate") VALUES ($1, $2, $3, $4) RETURNING "MaterialID"`,
+      [chapterId, topicTitle, content, publishDate]
+    );
+    return result.rows[0].materialid;
+  }
 }
 
 router.get("/:courseId", async (req, res) => {
   const courseId = req.params.courseId;
 
+  const client = await pool.connect();
   try {
-    // Mengambil data course dari database berdasarkan CourseID
-    const course = await new Promise((resolve, reject) => {
-      db.get(
-        "SELECT * FROM courses WHERE CourseID = ?",
-        [courseId],
-        (err, course) => {
-          if (err) {
-            console.error("Error retrieving courses:", err);
-            reject(err);
-          }
-          resolve(course);
-        }
+    // Retrieve course data based on CourseID
+    const courseResult = await client.query(
+      `SELECT "CourseName", "CourseDescription" FROM public."Courses" WHERE "CourseID" = $1`,
+      [courseId]
+    );
+
+    if (courseResult.rows.length === 0) {
+      return res.status(404).json({ error: "Course not found" });
+    }
+
+    const course = courseResult.rows[0];
+
+    // Retrieve chapter data based on CourseID
+    const chaptersResult = await client.query(
+      `SELECT "ChapterID", "ChapterName" FROM public."Chapters" WHERE "CourseID" = $1`,
+      [courseId]
+    );
+
+    // Retrieve topics for each chapter
+    const chaptersWithTopics = [];
+    for (const chapter of chaptersResult.rows) {
+      const topicsResult = await client.query(
+        `SELECT "MaterialID" as id, "ChapterID", "MaterialTitle" as title FROM public."Materials" WHERE "ChapterID" = $1`,
+        [chapter.ChapterID] // Use dot notation here
       );
-    });
+      chaptersWithTopics.push({
+        id: chapter.ChapterID, // Use dot notation here
+        title: chapter.ChapterName, // Use dot notation here
+        expand: true,
+        topics: topicsResult.rows,
+      });
+    }
 
-    // Mengambil data chapter dari database berdasarkan CourseID
-    const chapters = await new Promise((resolve, reject) => {
-      db.all(
-        "SELECT ChapterID, ChapterName FROM chapters WHERE CourseID = ?",
-        [courseId],
-        async (err, chapters) => {
-          if (err) {
-            console.error("Error retrieving chapters:", err);
-            reject(err);
-          } else {
-            // Mendefinisikan fungsi untuk mengambil topics (Materials) dari database berdasarkan ChapterID
-            const getTopics = (chapterId) => {
-              return new Promise((resolve, reject) => {
-                db.all(
-                  "SELECT MaterialID as id, ChapterID, MaterialTitle as title FROM materials WHERE ChapterID = ?",
-                  [chapterId],
-                  (err, topics) => {
-                    if (err) {
-                      console.error(
-                        "Error retrieving topics (materials):",
-                        err
-                      );
-                      reject(err);
-                    }
-                    resolve(topics);
-                  }
-                );
-              });
-            };
-
-            // Menggunakan async/await untuk mendapatkan topics untuk setiap chapter
-            const chaptersWithTopics = [];
-            for (const chapter of chapters) {
-              const topics = await getTopics(chapter.ChapterID);
-              chaptersWithTopics.push({
-                id: chapter.ChapterID,
-                title: chapter.ChapterName,
-                expand: true,
-                topics: topics,
-              });
-            }
-
-            resolve(chaptersWithTopics);
-          }
-        }
-      );
-    });
-
-    // Mengembalikan hasil dalam format payload yang diinginkan
+    // Return the result in the desired payload format
     res.json({
-      CourseName: course.CourseName,
-      CourseDescription: course.CourseDescription,
-      chapters: chapters,
+      CourseName: course.CourseName, // Use dot notation here
+      CourseDescription: course.CourseDescription, // Use dot notation here
+      chapters: chaptersWithTopics,
     });
   } catch (error) {
     console.error("Error:", error);
     res.status(500).json({ error: "Internal Server Error" });
+  } finally {
+    client.release();
   }
 });
+
+
 
 module.exports = router;

@@ -2,13 +2,11 @@ const express = require("express");
 const { graphqlHTTP } = require("express-graphql");
 const { buildSchema } = require("graphql");
 const cors = require('cors');
-const sqlite3 = require("sqlite3").verbose();
- 
-const db = new sqlite3.Database("database.db");
+const { Pool } = require('pg');
 
-// Inisialisasi basis data SQLite
-db.serialize(() => {
-  db.run("CREATE TABLE IF NOT EXISTS visitors (id INTEGER PRIMARY KEY, page TEXT, visitor INTEGER)");
+// Inisialisasi koneksi PostgreSQL
+const pool = new Pool({
+  connectionString: "postgres://default:DIJfbQl0Tp4A@ep-super-bush-a1526tnv.ap-southeast-1.aws.neon.tech:5432/verceldb?sslmode=require",
 });
 
 // Construct a schema, using GraphQL schema language
@@ -39,70 +37,32 @@ var schema = buildSchema(`
 // The root provides a resolver function for each API endpoint
 var root = {
   getVisitor: (args) => {
-    return new Promise((resolve, reject) => {
-      db.get("SELECT * FROM visitors WHERE id = ?", [args.id], (err, row) => {
-        if (err) {
-          reject(err);
-        } else {
-          resolve(row);
-        }
-      });
-    });
+    return pool.query("SELECT * FROM visitors WHERE id = $1", [args.id])
+      .then(res => res.rows[0])
+      .catch(err => console.error(err));
   },
   getAllVisitors: () => {
-    return new Promise((resolve, reject) => {
-      db.all("SELECT * FROM visitors", (err, rows) => {
-        if (err) {
-          reject(err);
-        } else {
-          resolve(rows);
-        }
-      });
-    });
+    return pool.query("SELECT * FROM visitors")
+      .then(res => res.rows)
+      .catch(err => console.error(err));
   },
   createVisitor: ({ input }) => {
-    return new Promise((resolve, reject) => {
-      db.run("INSERT INTO visitors (page, visitor) VALUES (?, ?)", [input.page, input.visitor], function (err) {
-        if (err) {
-          reject(err);
-        } else {
-          resolve({ id: this.lastID, ...input });
-        }
-      });
-    });
+    return pool.query("INSERT INTO visitors (page, visitor) VALUES ($1, $2) RETURNING *", [input.page, input.visitor])
+      .then(res => res.rows[0])
+      .catch(err => console.error(err));
   },
   updateVisitor: ({ id, input }) => {
-    return new Promise((resolve, reject) => {
-      db.get("SELECT visitor FROM visitors WHERE id = ?", [id], (err, row) => {
-        if (err) {
-          reject(err);
-        } else {
-          // Mengambil nilai visitor saat ini dan menambahkannya dengan 1
-          const updatedVisitor = row.visitor + 1;
-          
-          // Melakukan update ke basis data dengan nilai visitor yang baru
-          db.run("UPDATE visitors SET page = ?, visitor = ? WHERE id = ?", [input.page, updatedVisitor, id], (err) => {
-            if (err) {
-              reject(err);
-            } else {
-              // Mengembalikan data yang telah di-update
-              resolve({ id, page: input.page, visitor: updatedVisitor });
-            }
-          });
-        }
-      });
-    });
-  },  
+    return pool.query("UPDATE visitors SET page = $1, visitor = visitor + 1 WHERE id = $2 RETURNING *", [input.page, id])
+      .then(res => res.rows[0])
+      .catch(err => console.error(err));
+  },
   deleteVisitor: ({ id }) => {
-    return new Promise((resolve, reject) => {
-      db.run("DELETE FROM visitors WHERE id = ?", [id], (err) => {
-        if (err) {
-          reject(err);
-        } else {
-          resolve(true);
-        }
+    return pool.query("DELETE FROM visitors WHERE id = $1", [id])
+      .then(() => true)
+      .catch(err => {
+        console.error(err);
+        return false;
       });
-    });
   }
 };
 
